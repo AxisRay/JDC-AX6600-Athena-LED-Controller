@@ -70,25 +70,18 @@ endef
 # =========================================================
 define Package/$(PKG_NAME)/postinst
 #!/bin/sh
-[ -n "$${IPKG_INSTROOT}" ] || {
-	# 1. 兼容新型 apk 包管理器
+if [ -z "$${IPKG_INSTROOT}" ]; then
 	if [ -f /etc/config/athena_led.apk-new ]; then
 		mv /etc/config/athena_led /etc/config/athena_led.v1_bak 2>/dev/null
 		mv /etc/config/athena_led.apk-new /etc/config/athena_led
 	fi
-
-	# 2. 兼容传统的 opkg 包管理器
 	if [ -f /etc/config/athena_led-opkg ]; then
 		mv /etc/config/athena_led /etc/config/athena_led.v1_bak 2>/dev/null
 		mv /etc/config/athena_led-opkg /etc/config/athena_led
 	fi
-
-	# 3. 强制清理 LuCI 缓存，让新版界面立刻生效
 	rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
-	
-	# 4. 尝试重启服务以加载 v2.0.0 新配置
 	/etc/init.d/athena_led restart >/dev/null 2>&1
-}
+fi
 exit 0
 endef
 
