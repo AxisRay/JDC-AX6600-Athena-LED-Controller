@@ -35,3 +35,6 @@ dist/
 .DS_Store
 Thumbs.db
 
+
+!luci-app-athena-led/root/usr/bin/*
+
