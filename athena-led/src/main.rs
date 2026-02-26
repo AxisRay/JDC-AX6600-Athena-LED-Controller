@@ -53,6 +53,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use regex::Regex;
+use std::collections::HashMap;
 
 
 
@@ -150,9 +151,9 @@ struct SystemMonitor {
     http_client: Client,
     
     // 网络流量记录
-    last_rx_bytes: u64,
-    last_tx_bytes: u64,
-    last_net_check: std::time::Instant,
+    // --- 【换成这 1 个】 ---
+    // 🌟 [终极升级] 独立记忆每个网卡的 (rx_bytes, tx_bytes, last_time)
+    net_speed_cache: HashMap<String, (u64, u64, std::time::Instant)>,
     
     // CPU 记录
     last_cpu_total: u64,
@@ -219,10 +220,8 @@ impl SystemMonitor {
             http_cache_text: String::new(),
             http_cache_time: Instant::now(),
 
-            // 统计字段
-            last_rx_bytes: 0,
-            last_tx_bytes: 0,
-            last_net_check: Instant::now(),
+
+            net_speed_cache: HashMap::new(),
             
             last_cpu_total: 0,
             last_cpu_idle: 0,
@@ -304,7 +303,8 @@ impl SystemMonitor {
         // 🔄 独立测速计算 (每0.5秒刷新一次)
         let net_duration = now.duration_since(self.led_last_time).as_secs_f64();
         if net_duration >= 0.5 {
-            let (curr_rx, curr_tx) = self.read_net_bytes();
+            // 🌟 [修复点] 调用带参数的新方法，传入全局默认网卡
+            let (curr_rx, curr_tx) = self.read_net_bytes_for(&self.net_interface);
             if self.led_last_rx > 0 {
                 self.led_rx_speed = (curr_rx.saturating_sub(self.led_last_rx)) as f64 / net_duration;
                 self.led_tx_speed = (curr_tx.saturating_sub(self.led_last_tx)) as f64 / net_duration;
@@ -410,17 +410,15 @@ impl SystemMonitor {
   
     //网络部分
     // ==========================================
-    // [终极网速修复] 完美适配所有 OpenWrt 格式，绝对不错位
+    // [终极网速修复] 完美适配所有网卡动态切换
     // ==========================================
-    fn read_net_bytes(&self) -> (u64, u64) {
+    // 🌟 [修改点] 接收指定的网卡名 target_iface
+    fn read_net_bytes_for(&self, target_iface: &str) -> (u64, u64) {
         if let Ok(content) = std::fs::read_to_string("/proc/net/dev") {
             for line in content.lines() {
-                // 找到用户指定的网卡 (比如 br-lan, eth1)
-                if line.contains(&self.net_interface) {
-                    // 核心修复：先用冒号 ':' 切开网卡名和后面的数据
+                if line.contains(target_iface) {
                     if let Some((_, data)) = line.split_once(':') {
                         let parts: Vec<&str> = data.split_whitespace().collect();
-                        // Receive bytes 在索引 0，Transmit bytes 在索引 8
                         if parts.len() >= 9 {
                             let rx = parts[0].parse::<u64>().unwrap_or(0);
                             let tx = parts[8].parse::<u64>().unwrap_or(0);
@@ -433,12 +431,57 @@ impl SystemMonitor {
         (0, 0)
     }
 
-    // 读取 /proc/net/dev 获取原始字节数
-    fn get_total_traffic(&self) -> String {
-        // 直接读取当前总数值
-        let (rx, tx) = self.read_net_bytes(); 
-        
-        // 辅助闭包：自动把字节转成 GB/MB
+
+    // 🌟 获取实时网速 (V2.0 终极版：支持多网卡同时、独立测速)
+    pub fn get_speed_string_for(&mut self, mode: u8, target_iface: &str) -> String {
+        let (curr_rx, curr_tx) = self.read_net_bytes_for(target_iface);
+        let now = Instant::now();
+
+        // 🌟 核心魔法：去字典里拿这个专属网卡的数据。如果没拿过（第一次），就存入当前数据
+        let (last_rx, last_tx, last_time) = self.net_speed_cache
+            .entry(target_iface.to_string())
+            .or_insert((curr_rx, curr_tx, now));
+
+        let duration = now.duration_since(*last_time).as_secs_f64();
+
+        // 防抖与异常防护
+        if duration < 0.1 || duration > 30.0 || *last_rx == 0 {
+            // 更新记忆，返回 0
+            self.net_speed_cache.insert(target_iface.to_string(), (curr_rx, curr_tx, now));
+            return format_bytes_speed(0.0);
+        }
+
+        // 独立计算该网卡的网速
+        let speed = if mode == 0 {
+            (curr_rx.saturating_sub(*last_rx)) as f64 / duration
+        } else {
+            (curr_tx.saturating_sub(*last_tx)) as f64 / duration
+        };
+
+        // 更新这块网卡的专属记忆
+        self.net_speed_cache.insert(target_iface.to_string(), (curr_rx, curr_tx, now));
+
+        format_bytes_speed(speed)
+    }
+
+    // --- 各类累计流量的动态查询 ---
+    pub fn get_total_rx_string_for(&self, target_iface: &str) -> String {
+        let (curr_rx, _) = self.read_net_bytes_for(target_iface);
+        format!("TD:{}", format_bytes_total(curr_rx))
+    }
+
+    pub fn get_total_tx_string_for(&self, target_iface: &str) -> String {
+        let (_, curr_tx) = self.read_net_bytes_for(target_iface);
+        format!("TU:{}", format_bytes_total(curr_tx))
+    }
+
+    pub fn get_traffic_total_string_for(&self, target_iface: &str) -> String {
+        let (curr_rx, curr_tx) = self.read_net_bytes_for(target_iface);
+        format!("T:{}", format_bytes_total(curr_rx + curr_tx))
+    }
+
+    pub fn get_total_traffic_for(&self, target_iface: &str) -> String {
+        let (rx, tx) = self.read_net_bytes_for(target_iface); 
         let format_bytes = |bytes: u64| -> String {
             if bytes > 1024 * 1024 * 1024 {
                 format!("{:.1}G", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
@@ -446,65 +489,7 @@ impl SystemMonitor {
                 format!("{:.0}M", bytes as f64 / 1024.0 / 1024.0)
             }
         };
-
-        let rx_str = format_bytes(rx);
-        let tx_str = format_bytes(tx);
-
-        // 显示格式： "T:1.2G/500M"
-        format!("T:{}/{}", rx_str, tx_str)
-    }
-
-    // 1. 获取实时网速字符串 (如 "5.2M") - 专门用于显示下行
-    // mode: 0=Download, 1=Upload
-    
-    fn get_speed_string(&mut self, mode: u8) -> String {
-        let (curr_rx, curr_tx) = self.read_net_bytes();
-        let now = Instant::now();
-        let duration = now.duration_since(self.last_net_check).as_secs_f64();
-        
-        // [修复 1] 防止除以0，也防止间隔过短导致计算抖动
-        if duration < 0.1 { return "...".to_string(); }
-
-        // [修复 2] 核心修复：防止启动瞬间出现 "20000MB/s" 的巨额数值
-        // 如果 last_rx_bytes 为 0 (说明 init 没成功或者刚启动)
-        // 或者 duration 异常大 (说明程序暂停了很久)，
-        // 我们不进行计算，而是直接重置基准值，并返回 0。
-        if self.last_rx_bytes == 0 || self.last_tx_bytes == 0 || duration > 30.0 {
-            self.last_rx_bytes = curr_rx;
-            self.last_tx_bytes = curr_tx;
-            self.last_net_check = now;
-            return format_bytes_speed(0.0);
-        }
-
-        let speed = if mode == 0 {
-            // saturating_sub 防止计数器溢出/回滚导致崩溃
-            (curr_rx.saturating_sub(self.last_rx_bytes)) as f64 / duration
-        } else {
-            (curr_tx.saturating_sub(self.last_tx_bytes)) as f64 / duration
-        };
-
-        // 更新状态
-        self.last_rx_bytes = curr_rx;
-        self.last_tx_bytes = curr_tx;
-        self.last_net_check = now;
-
-        format_bytes_speed(speed)
-    }
-
-
-    // --- [新增] 获取累计下载流量 (Total Download) ---
-    // 返回格式如: "TD:1.5T"
-    fn get_total_rx_string(&self) -> String {
-        let (curr_rx, _) = self.read_net_bytes();
-        // 直接使用 curr_rx 表示自开机以来的总量
-        format!("TD:{}", format_bytes_total(curr_rx))
-    }
-
-    // --- [新增] 获取累计上传流量 (Total Upload) ---
-    // 返回格式如: "TU:50G"
-    fn get_total_tx_string(&self) -> String {
-        let (_, curr_tx) = self.read_net_bytes();
-        format!("TU:{}", format_bytes_total(curr_tx))
+        format!("T:{}/{}", format_bytes(rx), format_bytes(tx))
     }
 
     // --- [新增] 获取上下行同显实时网速 (updl) ---
@@ -519,34 +504,43 @@ impl SystemMonitor {
         format!("{}/{}", short_fmt(self.led_tx_speed), short_fmt(self.led_rx_speed))
     }
 
-    // --- [恢复并优化] 获取上下累计总和 (Total) ---
-    pub fn get_traffic_total_string(&self) -> String {
-        let (curr_rx, curr_tx) = self.read_net_bytes();
-        format!("T:{}", format_bytes_total(curr_rx + curr_tx))
-    }
 
-    // --- [新增] 物理网口链路状态 (nic) ---
+    // --- [新增] 物理网口链路状态 (nic) 自适应版 ---
     pub fn get_nic_status(&self) -> String {
-        let interfaces = ["eth0", "eth1", "eth2", "eth3", "eth4"]; 
+        // 定义两套最常见的网口命名体系
+        let dsa_interfaces = ["wan", "lan1", "lan2", "lan3", "lan4"];
+        let legacy_interfaces = ["eth0", "eth1", "eth2", "eth3", "eth4"];
+        
+        // 动态嗅探：如果系统中存在 wan 或 lan1，就判定为新款 DSA 架构
+        let is_dsa = std::path::Path::new("/sys/class/net/wan").exists() || 
+                     std::path::Path::new("/sys/class/net/lan1").exists();
+                     
+        let target_interfaces = if is_dsa { &dsa_interfaces } else { &legacy_interfaces };
+        
         let mut result = String::new();
         
-        for iface in interfaces {
-            let oper_path = format!("/sys/class/net/{}/operstate", iface);
+        for iface in target_interfaces {
+            // 💡 极客细节：使用 carrier 来判断底层物理连接，比 operstate 准确 100 倍
+            let carrier_path = format!("/sys/class/net/{}/carrier", iface);
             let speed_path = format!("/sys/class/net/{}/speed", iface);
             
-            if std::fs::read_to_string(&oper_path).unwrap_or_default().trim() != "up" {
-                result.push('O'); // Disconnected
+            // 如果 carrier 不是 1（比如文件不存在、值为 0），说明没插网线
+            if std::fs::read_to_string(&carrier_path).unwrap_or_default().trim() != "1" {
+                result.push('O'); 
                 continue;
             }
             
+            // 读取协商速率
             match std::fs::read_to_string(&speed_path).unwrap_or_default().trim() {
-                "10" => result.push('B'),
-                "100" => result.push('H'),
-                "1000" => result.push('G'),
-                "2500" => result.push('S'),
-                _ => result.push('?'),
+                "10" => result.push('B'),    // Base (10M)
+                "100" => result.push('H'),   // Hundred (100M)
+                "1000" => result.push('G'),  // Gigabit (1000M)
+                "2500" => result.push('S'),  // Super (2.5G)
+                "10000" => result.push('T'), // Ten Gigabit (10G) - 万兆战未来
+                _ => result.push('?'),       // 链路通了但速度未知
             }
         }
+        
         if result.is_empty() { "NIC:Err".to_string() } else { result }
     }
 
@@ -664,6 +658,35 @@ impl SystemMonitor {
             // 如果选了多个，用空格连接: "cpu:55C ddr:45C"
             results.join(" ")
         }
+    }
+
+    // ==========================================
+    // [新增] 极简而精准的单体温度探针
+    // ==========================================
+    pub fn get_single_temp(&self, sensor_id: &str) -> String {
+        // OpenWrt 规范：温度文件存放在 /sys/class/thermal/thermal_zoneX/temp
+        let path = format!("/sys/class/thermal/thermal_zone{}/temp", sensor_id);
+        
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(temp_millideg) = content.trim().parse::<f64>() {
+                let temp_c = temp_millideg / 1000.0;
+                
+                // 自动分配高逼格前缀 (严格控制在 1~2 个字符，防止撑爆屏幕)
+                let prefix = match sensor_id {
+                    "0" => "N0", // NSS-Top
+                    "1" => "N1", // NSS
+                    "2" => "W0", // Wi-Fi PHY0 (2.4G/5G)
+                    "3" => "W1", // Wi-Fi PHY1 (5G-Game)
+                    "4" => "C",  // CPU
+                    "5" => "L",  // LPASS
+                    "6" => "D",  // DDR
+                    _ => "?",
+                };
+                
+                return format!("{}:{:.1}C", prefix, temp_c);
+            }
+        }
+        "T:Err".to_string()
     }
 
     // ==========================================
@@ -1162,13 +1185,16 @@ fn is_sleep_time(start_str: &str, end_str: &str) -> bool {
 
 
 // ==========================================
-// [智能调度引擎] 专属配置结构
+// [智能调度引擎] 专属配置结构 (V2.0 动态参数版)
 // ==========================================
+#[derive(Debug, Clone)]
 struct ModuleConfig {
     name: String,
+    param: String, // 🌟 新增：用于存放冒号后面的二级参数 (如 "wan", "time_sec", "4")
     duration: u64,
 }
 
+#[derive(Debug, Clone)]
 struct ProfileConfig {
     modules: Vec<ModuleConfig>,
 }
@@ -1184,17 +1210,21 @@ struct Args {
     #[arg(long, default_value_t = 5)]
     light_level: u8, // 亮度 (0-7)
 
+    // [新增] 允许用户自定义按键 GPIO
+    #[arg(long, default_value = "71")]
+    pub button_gpio: String,
+
 
     // [核心升级] 智能 Profile 数组！
     // 允许传入多个 --profile，比如：
-    // --profile "time#2 weather#5" --profile "netspeed_down"
+    // --profile "time_group:time_sec#10 weather#10" --profile "netspeed_down:wan#5"
     #[arg(
         long = "profile", 
         num_args = 1.., 
         default_values = [
-            "time_sec#10 weather#10",   // 第 1 台：时间与天气
-            "cpu#5 mem#5 temp#5",       // 第 2 台：系统监控
-            "traffic_split#5 nic#5"     // 第 3 台：网络状态
+            "time_group:time_sec#10 weather#10", // 第 1 台：时间与天气
+            "cpu#5 mem#5 temp_single:4#5",       // 第 2 台：系统监控 (默认看 CPU 温度)
+            "traffic_split:br-lan#5 nic#5"       // 第 3 台：网络状态 (默认看 br-lan)
         ]
     )]
     profile: Vec<String>,
@@ -1329,29 +1359,54 @@ async fn main() -> Result<()> {
 
     loop {
         tokio::select! {
+            // 赛道 1：监听 Ctrl+C (你在电脑或 SSH 里手动调试时触发)
             _ = tokio::signal::ctrl_c() => { 
-                println!("🛑 收到退出信号，准备关屏退出...");
-                
-                // 🌟 [核心改动 C]: 告诉后台监听线程该下班了
-                running.store(false, std::sync::atomic::Ordering::SeqCst);
-
-                // 关屏逻辑
-                let _ = screen.write_data(b"         ", 0).await;
-                let _ = screen.power(false, 0); 
-
-                // 🌟 [核心改动 D]: 稍微等一下（100ms），给后台线程“跳出循环”的时间
-                tokio::time::sleep(Duration::from_millis(100)).await;
-
-                // 删掉 PID 文件（强迫症福音，保持系统整洁）
-                let _ = std::fs::remove_file("/var/run/athena-led.pid");
-                
-                break;
+                println!("\n🛑 收到 Ctrl+C 信号，准备关屏退出...");
+                break; // 跳出循环，去执行下面的统一收尾代码
             },
             
-            // 进入超级调度引擎
-            _ = process_loop(&mut screen, &args, &mut monitor, &mut rx) => {},
+            // 赛道 2：🌟 监听 OpenWrt 停止服务发出的 SIGTERM 信号
+            _ = async {
+                #[cfg(unix)]
+                {
+                    if let Ok(mut sigterm) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                        sigterm.recv().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                }
+                #[cfg(not(unix))]
+                std::future::pending::<()>().await;
+            } => {
+                println!("🛑 收到 OpenWrt 停止服务信号 (SIGTERM)，准备关屏退出...");
+                break; // 跳出循环，去执行下面的统一收尾代码
+            },
+            
+            // 赛道 3：进入超级调度引擎 (死循环)
+            _ = process_loop(&mut screen, &args, &mut monitor, &mut rx) => {
+                // 如果 process_loop 意外崩溃退出了，就在这里打个日志，然后重新进入下一次 loop 恢复运行
+                println!("⚠️ [警告] 渲染引擎意外退出，准备自动重启渲染循环...");
+            },
         }
     }
+
+    // ==========================================
+    // 🧹 统一的优雅退出收尾工作 (跳出 loop 后一定会执行这里)
+    // ==========================================
+    // 1. 告诉后台监听线程该下班了
+    running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // 2. 关屏逻辑：清空残影，彻底断电
+    let _ = screen.write_data(b"        ", 0).await;
+    let _ = screen.power(false, 0); 
+
+    // 3. 稍微等一下（100ms），给后台线程“跳出循环并关闭文件”的时间
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // 4. 删掉 PID 文件（强迫症福音，保持系统整洁）
+    let _ = std::fs::remove_file("/var/run/athena-led.pid");
+    
+    println!("👋 [系统] Athena LED 服务已安全关闭。");
     Ok(())
 }
 
@@ -1362,6 +1417,7 @@ async fn main() -> Result<()> {
 fn spawn_button_listener(
     tx: tokio::sync::watch::Sender<i32>, 
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    gpio_pin: String // 🌟 传进来！比如 "71"
     // 🌟 [可选] 如果你想让按键感知当前是否在休眠，可以传这个参数；
     // 也可以不传，全靠发送不同的 i32 信号让主线程去判断。
     // 这里我们假设直接通过 tx 发送特定的特殊值来通信。
@@ -1371,8 +1427,9 @@ fn spawn_button_listener(
     use std::time::{Duration, Instant};
     use std::sync::atomic::Ordering;
 
-    tokio::task::spawn_blocking(move || {
-        println!("🎮 [系统] 启动终极 GPIO71 硬件雷达监听模式 (支持长短按分离)...");
+tokio::task::spawn_blocking(move || {
+        // 🌟 打印日志也变成动态的！
+        println!("🎮 [系统] 启动终极 GPIO{} 硬件雷达监听模式 (支持长短按分离)...", gpio_pin);
 
         let mut file = match File::open("/sys/kernel/debug/gpio") {
             Ok(f) => f,
@@ -1388,13 +1445,16 @@ fn spawn_button_listener(
         let mut press_start: Option<Instant> = None;
         let mut long_press_handled = false;
 
+        // 🌟 提前组装好要搜索的字符串，不用每次循环都 format，压榨极致性能！
+        let search_target = format!("gpio{}  : in  low", gpio_pin);
+
         while running.load(Ordering::SeqCst) {
             buffer.clear();
             let _ = file.seek(SeekFrom::Start(0));
 
             if file.read_to_string(&mut buffer).is_ok() {
-                // 判断当前物理引脚是否处于低电平（按下状态）
-                let is_pressed = buffer.contains("gpio71  : in  low");
+                // 🌟 核心修复：检查 buffer 里有没有我们刚刚组装好的那个目标字符串
+                let is_pressed = buffer.contains(&search_target);
 
                 if is_pressed {
                     // 1️⃣ 刚刚按下瞬间，记录时间点
@@ -1426,7 +1486,7 @@ fn spawn_button_listener(
                             println!("➡️ [硬件交互] 短按触发！准备切换频道...");
                             
                             let current = *tx.borrow();
-                            // 如果当前处于休眠状态 (比如你的主线程里把状态设为了负数)，短按直接唤醒，从 1 开始
+                            // 如果当前处于休眠状态，短按直接唤醒，从 1 开始
                             if current < 0 {
                                 println!("☀️ [硬件交互] 夜间休眠被打断，唤醒屏幕！");
                                 let _ = tx.send(1);
@@ -1463,6 +1523,7 @@ fn spawn_button_listener(
     println!("📺 [Windows 模拟器] 按键监听已就绪（空跑模式）");
 }
 
+// 🌟 完美去掉了 pub，解决了可见性报错！
 async fn process_loop(
     screen: &mut led_screen::LedScreen, 
     args: &Args, 
@@ -1478,14 +1539,25 @@ async fn process_loop(
     for p_str in profile_args {
         let mut modules = Vec::new();
         for m_str in p_str.split_whitespace() {
+            // 1. 先用 '#' 切割，分离出【模块主体(含参数)】和【时长】
             let parts: Vec<&str> = m_str.split('#').collect();
-            let name = parts[0].to_string();
+            let name_with_param = parts[0];
+            
+            // 2. 提取时长
             let duration = if parts.len() > 1 {
                 parts[1].parse::<u64>().unwrap_or(args.seconds)
             } else {
                 args.seconds
             };
-            modules.push(ModuleConfig { name, duration });
+
+            // 🌟 3. 核心修复：用 ':' 切割主体，同时生成 name 和 param！
+            let (name, param) = match name_with_param.split_once(':') {
+                Some((n, p)) => (n.to_string(), p.to_string()),
+                None => (name_with_param.to_string(), String::new()), // 没冒号就给 param 塞个空字符串
+            };
+
+            // 4. 组装发车！现在 name 和 param 都实打实存在了
+            modules.push(ModuleConfig { name, param, duration });
         }
         if !modules.is_empty() { profiles.push(ProfileConfig { modules }); }
     }
@@ -1501,10 +1573,10 @@ async fn process_loop(
         // 🌟 [处理长按息屏] (由监听器发送 -1 触发)
         if *rx.borrow() < 0 {
             let _ = screen.write_data(b"        ", 0).await; 
-            screen.power(false, 0)?; 
+            screen.power(false, 0).unwrap_or_default(); 
             // 陷入沉睡，直到监听到大于 0 的短按唤醒信号
             let _ = rx.wait_for(|&val| val > 0).await; 
-            screen.power(true, args.light_level)?; 
+            screen.power(true, args.light_level).unwrap_or_default(); 
             continue; 
         }
 
@@ -1514,21 +1586,20 @@ async fn process_loop(
         // 🌟 [处理夜间休眠] (仅在保护期外，且满足时间时才休眠)
         if !is_manual_awake && is_sleep_time(&args.sleep_start, &args.sleep_end) {
             let _ = screen.write_data(b"        ", 0).await; 
-            screen.power(false, 0)?; 
+            screen.power(false, 0).unwrap_or_default(); 
             let sleep_sec = get_seconds_until_wake(&args.sleep_end);
             
             tokio::select! {
                 // 1. 正常睡到天亮自动醒
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(sleep_sec)) => {
-                    screen.power(true, args.light_level)?;
+                    screen.power(true, args.light_level).unwrap_or_default();
                     continue; 
                 }
                 // 2. 半夜被起夜的用户按了按钮
                 Ok(_) = rx.changed() => {
-                    println!("☀️ [硬件交互] 夜间休眠被打断，临时点亮屏幕 60 秒！");
-                    screen.power(true, args.light_level)?; 
                     // 赋予 60 秒免死金牌，这 60 秒内正常轮播配置
                     manual_wake_expire = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+                    screen.power(true, args.light_level).unwrap_or_default(); 
                     continue; 
                 }
             }
@@ -1559,14 +1630,34 @@ async fn process_loop(
                 "cpu" => text_to_show = monitor.get_cpu_usage_string(),
                 "mem" => text_to_show = monitor.get_mem_string(),
                 "load" => text_to_show = monitor.get_load_string(),
+
                 "temp" => text_to_show = monitor.get_temps_by_ids(&args.temp_flag),
+                // 这是本次新增的单体温度专属通道：
+                "temp_single" => {
+                    let sensor_id = if module.param.is_empty() { "4" } else { &module.param };
+                    text_to_show = monitor.get_single_temp(sensor_id); 
+                }
+
                 "ip" => text_to_show = monitor.get_public_ip(&args.ip_url).await,
-                "netspeed_down" => text_to_show = monitor.get_speed_string(0),
-                "netspeed_up" => text_to_show = monitor.get_speed_string(1),
-                "traffic_down" => text_to_show = monitor.get_total_rx_string(),
-                "traffic_up" => text_to_show = monitor.get_total_tx_string(),
-                "traffic_total" => text_to_show = monitor.get_traffic_total_string(),
-                "traffic_split" => text_to_show = monitor.get_total_traffic(),
+                // ==========================================
+                // 🌟 3. [升级] 动态网口流量组
+                // ==========================================
+                "netspeed_down" | "netspeed_up" | "traffic_down" | "traffic_up" | "traffic_total" | "traffic_split" => {
+                    // 如果前端选了网卡就用前端传入的 (比如 param="wan")，没传就用全局默认的 net_interface
+                    let target_iface = if module.param.is_empty() { &args.net_interface } else { &module.param };
+                    
+                    text_to_show = match module.name.as_str() {
+                        "netspeed_down" => monitor.get_speed_string_for(0, target_iface),
+                        "netspeed_up"   => monitor.get_speed_string_for(1, target_iface),
+                        "traffic_down"  => monitor.get_total_rx_string_for(target_iface),
+                        "traffic_up"    => monitor.get_total_tx_string_for(target_iface),
+                        "traffic_total" => monitor.get_traffic_total_string_for(target_iface),
+                        "traffic_split" => monitor.get_total_traffic_for(target_iface),
+                        _ => String::new(),
+                    };
+                }
+                
+                // 保留旧代码中存在的 updl (以防废弃不彻底)
                 "updl" => text_to_show = monitor.get_updl_string(),
                 "nic" => text_to_show = monitor.get_nic_status(),
                 "dev" => text_to_show = monitor.get_online_devices(),
@@ -1579,75 +1670,72 @@ async fn process_loop(
                     text_to_show = monitor.get_http_text(&args.custom_http_url, "", args.http_length, args.http_cache_secs).await;
                 }
                 
-                // 时间模块
-                // --- [静态模块] 经典时间与新增的日期格式 ---
-                "date" => text_to_show = Local::now().format("%m-%d").to_string(),
-                "time" => text_to_show = Local::now().format("%H:%M").to_string(),
-                "date_y" => text_to_show = Local::now().format("%y-%m-%d").to_string(), // 26-02-24
-                "date_Y" => text_to_show = Local::now().format("%Y.%m.%d").to_string(), // 2026.02.24
-                "week_only" => text_to_show = Local::now().format("%a").to_string().to_uppercase(), // WED
+                // ==========================================
+                // 🌟 1. [向下兼容合并] 时间与日期组
+                // ==========================================
+                // 把新版的 time_group 和所有旧版的散装名字全部拦截下来
+                "time_group" | "timeBlink" | "time_sec" | "weekday" | "time" | "date" | "date_y" | "date_Y" | "week_only" => {
+                    // 智能提取格式：如果是新版的 time_group，就用冒号后面的 param；如果是旧版直传的，就直接用旧版名字
+                    let format = if module.name == "time_group" {
+                        if module.param.is_empty() { "timeBlink" } else { module.param.as_str() }
+                    } else {
+                        module.name.as_str() 
+                    };
 
-                // --- 动态模块 1: 呼吸时钟 (保留你原汁原味的代码) ---
-                "timeBlink" => {
-                    let start = Instant::now(); 
-                    let mut time_flag = false;
-                    let mut last_tick = Instant::now();
-                    
-                    while start.elapsed() < Duration::from_secs(module.duration) {
-                        let mut time_str = Local::now().format("%H:%M").to_string();
-                        if time_flag { time_str = time_str.replace(':', ";"); }
-                        
-                        // [修改点] 使用 get_leds
-                        screen.write_data(time_str.as_bytes(), get_leds(monitor, args)).await?;
-                        
-                        if last_tick.elapsed().as_secs() >= 1 {
-                            time_flag = !time_flag;
-                            last_tick = Instant::now();
+                    match format {
+                        "time_sec" => {
+                            let start = Instant::now();
+                            while start.elapsed() < Duration::from_secs(module.duration) {
+                                let time_str = Local::now().format("%H^%M^%S").to_string();
+                                let _ = screen.write_data(time_str.as_bytes(), get_leds(monitor, args)).await;
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                    Ok(_) = rx.changed() => { module_interrupted = true; break; }
+                                }
+                            }
                         }
-                        
-                        // [修改点] 100ms 智能监听
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                            Ok(_) = rx.changed() => { module_interrupted = true; break; }
+                        "timeBlink" => {
+                            let start = Instant::now(); 
+                            let mut time_flag = false;
+                            let mut last_tick = Instant::now();
+                            while start.elapsed() < Duration::from_secs(module.duration) {
+                                let mut time_str = Local::now().format("%H:%M").to_string();
+                                if time_flag { time_str = time_str.replace(':', ";"); }
+                                let _ = screen.write_data(time_str.as_bytes(), get_leds(monitor, args)).await;
+                                if last_tick.elapsed().as_secs() >= 1 {
+                                    time_flag = !time_flag;
+                                    last_tick = Instant::now();
+                                }
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                    Ok(_) = rx.changed() => { module_interrupted = true; break; }
+                                }
+                            }
                         }
-                    }
-                }
-
-
-                "time_sec" => {
-                    let start = Instant::now();
-                    while start.elapsed() < Duration::from_secs(module.duration) {
-                        let time_str = Local::now().format("%H^%M^%S").to_string();
-                        
-                        screen.write_data(time_str.as_bytes(), get_leds(monitor, args)).await?;
-                        
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                            Ok(_) = rx.changed() => { module_interrupted = true; break; }
+                        "weekday" => {
+                            let start = Instant::now();
+                            while start.elapsed() < Duration::from_secs(module.duration) {
+                                let elapsed_ms = start.elapsed().as_millis();
+                                let cycle = elapsed_ms % 4000; 
+                                let display_text = if cycle < 1500 {
+                                    Local::now().format("%a").to_string().to_uppercase()
+                                } else {
+                                    Local::now().format("%H:%M").to_string()
+                                };
+                                let _ = screen.write_data(display_text.as_bytes(), get_leds(monitor, args)).await;
+                                tokio::select! {
+                                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                                    Ok(_) = rx.changed() => { module_interrupted = true; break; }
+                                }
+                            }
                         }
-                    }
-                }
-
-                // --- [新增] 动态模块 3: 星期与时间无缝交替 (解决字符太长装不下的痛点) ---
-                "weekday" => {
-                    let start = Instant::now();
-                    while start.elapsed() < Duration::from_secs(module.duration) {
-                        let elapsed_ms = start.elapsed().as_millis();
-                        
-                        // 4秒为一个周期：前1.5秒显示纯星期，后2.5秒显示时间
-                        let cycle = elapsed_ms % 4000; 
-                        let display_text = if cycle < 1500 {
-                            Local::now().format("%a").to_string().to_uppercase()
-                        } else {
-                            Local::now().format("%H:%M").to_string()
-                        };
-                        
-                        screen.write_data(display_text.as_bytes(), get_leds(monitor, args)).await?;
-                        
-                        tokio::select! {
-                            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
-                            Ok(_) = rx.changed() => { module_interrupted = true; break; }
-                        }
+                        // --- 静态时间与日期 ---
+                        "time" => text_to_show = Local::now().format("%H:%M").to_string(),
+                        "date" => text_to_show = Local::now().format("%m-%d").to_string(),
+                        "date_y" => text_to_show = Local::now().format("%y-%m-%d").to_string(),
+                        "date_Y" => text_to_show = Local::now().format("%Y.%m.%d").to_string(),
+                        "week_only" => text_to_show = Local::now().format("%a").to_string().to_uppercase(),
+                        _ => text_to_show = Local::now().format("%H:%M").to_string(), // 兜底
                     }
                 }
                 

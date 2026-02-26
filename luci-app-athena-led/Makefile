@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-athena-led
-PKG_VERSION:=2.0.4
-PKG_RELEASE:=3
+PKG_VERSION:=2.1.0
+PKG_RELEASE:=1
 
 PKG_MAINTAINER:=unraveloop <https://github.com/unraveloop>
 PKG_LICENSE:=Apache-2.0
@@ -53,6 +53,8 @@ define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	tar xf $(DL_DIR)/$(PKG_SOURCE) -C $(PKG_BUILD_DIR)
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/athena-led $(1)/usr/bin/
+
+	$(INSTALL_BIN) ./root/usr/bin/find_button.sh $(1)/usr/bin/find_button
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	[ -f $(PKG_BUILD_DIR)/zh_Hans.lmo ] && $(INSTALL_DATA) $(PKG_BUILD_DIR)/zh_Hans.lmo $(1)/usr/lib/lua/luci/i18n/athena_led.zh-cn.lmo || true
 endef

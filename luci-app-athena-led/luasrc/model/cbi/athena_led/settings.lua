@@ -19,6 +19,12 @@ o = s:option(ListValue, "light_level", translate("Brightness Level"))
 o.default = "5"
 for i = 0, 7 do o:value(tostring(i), tostring(i)) end
 
+-- 物理按键 GPIO 绑定
+o = s:taboption("general", Value, "button_gpio", translate("Physical Button GPIO"))
+o.default = "71"
+o.datatype = "uinteger"
+o.description = translate("GPIO pin number for the physical screen button. Default is 71 for JDCloud AX6600. Run 'find_button' in SSH to detect if unsure.")
+
 -- 🌟 核心模式切换开关
 o = s:option(ListValue, "profile_mode", translate("Button & Profile Mode"))
 o:value("single", translate("Single Profile (Button skips to next module)"))
@@ -38,27 +44,84 @@ s1.sortable = true  -- 开启拖拽排序
 
 
 
--- 模块选择 (共用选项)
+-- ==========================================
+-- 🌟 1. 主菜单：极限瘦身版
+-- ==========================================
 local function add_module_options(opt)
-    opt:value("time_sec", translate("⌚ Time (HH:MM:SS)"))
-    opt:value("timeBlink", translate("⌚ Time (Blink)"))
-    opt:value("date", translate("📅 Date (MM-DD)"))
-    opt:value("weekday", translate("📅 Week & Time"))
-    opt:value("weather", translate("⛅ Weather"))
+    -- 1. 组合类
+    opt:value("time_group", translate("🕒 Time & Date"))  -- 🌟 把 7 个选项合并成了这 1 个！
+    opt:value("weather", translate("⛅ Local Weather"))
+    
+    -- 2. 系统核心
     opt:value("cpu", translate("💻 CPU Load"))
-    opt:value("mem", translate("💻 RAM Usage"))
-    opt:value("temp", translate("🌡️ Temperatures"))
-    opt:value("traffic_split", translate("🌐 Realtime Speed"))
-    opt:value("nic", translate("🌐 NIC Status"))
+    opt:value("mem", translate("💾 RAM Usage"))
+    opt:value("load", translate("⚙️ System Load"))
+    opt:value("temp_single", translate("🌡️ Single Temp")) -- 🌟 包含二级菜单
+    opt:value("uptime", translate("⏱️ System Uptime"))
+
+    -- 3. 网络与流量 (网卡可选)
+    opt:value("traffic_split", translate("🌐 Realtime Speed (DL/UL)"))
+    opt:value("netspeed_down", translate("⬇️ Download Speed"))
+    opt:value("netspeed_up", translate("⬆️ Upload Speed"))
+    opt:value("traffic_down", translate("📥 Total Downloaded"))
+    opt:value("traffic_up", translate("📤 Total Uploaded"))
+    opt:value("traffic_total", translate("📊 Total Traffic (DL+UL)"))
+    
+    -- 4. 接口与拓展
+    opt:value("nic", translate("🔌 NIC Status"))
+    opt:value("ip", translate("🌍 WAN IP"))
+    opt:value("dev", translate("📱 Online Devices"))
     opt:value("banner", translate("📝 Custom Text"))
     opt:value("http_custom", translate("🔗 HTTP API"))
     opt:value("stock", translate("📈 Stock Trend"))
-    opt:value("ip", translate("🌍 WAN IP"))
-    opt:value("dev", translate("📱 Online Devices"))
+end
+
+-- ==========================================
+-- 🌟 2. 二级参数菜单：加入时间格式选项
+-- ==========================================
+local function add_module_params(section)
+    -- [新增] 时间与日期专属下拉框
+    local o_time = section:option(ListValue, "param_time", translate("Display Format"))
+    o_time:depends("module", "time_group")
+    o_time.default = "timeBlink"
+    o_time:value("timeBlink", translate("⌚ Time (Blink)"))
+    o_time:value("time_sec", translate("⌚ Time (HH:MM:SS)"))
+    o_time:value("time", translate("⌚ Time (Static)"))
+    o_time:value("date", translate("📅 Date (MM-DD)"))
+    o_time:value("date_Y", translate("📅 Date (YYYY.MM.DD)"))
+    o_time:value("weekday", translate("🗓️ Week & Time (Cycle)"))
+    o_time:value("week_only", translate("🗓️ Day of Week"))
+
+    -- [保留] 单体温度专属下拉框
+    local o_temp = section:option(ListValue, "param_temp", translate("Target Sensor"))
+    o_temp:depends("module", "temp_single")
+    o_temp.default = "4"
+    o_temp:value("0", translate("NSS-Top"))
+    o_temp:value("1", translate("NSS"))
+    o_temp:value("2", translate("Wi-Fi PHY0"))
+    o_temp:value("3", translate("Wi-Fi PHY1"))
+    o_temp:value("4", translate("CPU"))
+    o_temp:value("5", translate("LPASS"))
+    o_temp:value("6", translate("DDR"))
+
+    -- [保留] 独立网卡专属下拉框
+    local o_net = section:option(Value, "param_net", translate("Target Interface"))
+    o_net:depends("module", "netspeed_down")
+    o_net:depends("module", "netspeed_up")
+    o_net:depends("module", "traffic_down")
+    o_net:depends("module", "traffic_up")
+    o_net:depends("module", "traffic_total")
+    o_net:depends("module", "traffic_split")
+    o_net.placeholder = "br-lan"
+    for _, dev in ipairs(sys.net.devices()) do
+        if dev ~= "lo" then o_net:value(dev) end
+    end
 end
 
 o = s1:option(ListValue, "module", translate("Display Module"))
 add_module_options(o)
+
+add_module_params(s1)
 
 o = s1:option(Value, "duration", translate("Duration (s)"))
 o.datatype = "uinteger"
@@ -81,6 +144,8 @@ o.default = "1"
 
 o = s2:option(ListValue, "module", translate("Display Module"))
 add_module_options(o)
+
+add_module_params(s2)
 
 o = s2:option(Value, "duration", translate("Duration (s)"))
 o.datatype = "uinteger"
@@ -119,7 +184,12 @@ s = m:section(NamedSection, "general", "settings", translate("Sensor & Weather")
 s.anonymous = true
 s.addremove = false
 
--- 温度传感器
+-- ============================================================
+-- ⚠️ [V2.0 遗留兼容] 以下全局温度传感器多选框已在前端隐藏
+-- V2.0 起已由 temp_single 模块的动态二级菜单完全接管。
+-- 保留代码注释，仅供向下兼容及未来调试参考。
+-- ============================================================
+--[[
 o = s:option(MultiValue, "temp_sensors", translate("Temperature Sensors"))
 o.widget = "checkbox"
 o.default = "4"
@@ -131,6 +201,7 @@ o:value("4", translate("cpu"))
 o:value("5", translate("lpass"))
 o:value("6", translate("ddrss"))
 o.description = translate("Select sensors to cycle through.")
+]]--
 
 -- 天气源
 o = s:option(ListValue, "weather_source", translate("Weather Source"))

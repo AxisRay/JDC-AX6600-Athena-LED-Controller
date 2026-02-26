@@ -64,36 +64,66 @@ msgstr "显示模块"
 msgid "Duration (s)"
 msgstr "持续时间 (秒)"
 
-# --- 模块带 Emoji 的下拉选项 ---
+# --- 模块带 Emoji 的下拉选项 (完整 27 模块版) ---
 msgid "⌚ Time (HH:MM:SS)"
 msgstr "⌚ 时间 (时:分:秒)"
 
 msgid "⌚ Time (Blink)"
 msgstr "⌚ 时间 (闪烁效果)"
 
+msgid "⌚ Time (Static)"
+msgstr "⌚ 时间 (静态显示)"
+
 msgid "📅 Date (MM-DD)"
 msgstr "📅 日期 (月-日)"
 
-msgid "📅 Week & Time"
-msgstr "📅 星期与时间"
+msgid "📅 Date (YYYY.MM.DD)"
+msgstr "📅 日期 (带年份)"
 
-msgid "⛅ Weather"
+msgid "📅 Week & Time (Cycle)"
+msgstr "🗓️ 星期与时间循环"
+
+msgid "📅 Day of Week"
+msgstr "🗓️ 仅星期几"
+
+msgid "⛅ Local Weather"
 msgstr "⛅ 当地天气"
 
 msgid "💻 CPU Load"
 msgstr "💻 CPU 占用率"
 
-msgid "💻 RAM Usage"
-msgstr "💻 内存占用率"
+msgid "💾 RAM Usage"
+msgstr "💾 内存占用率"
+
+msgid "⚙️ System Load"
+msgstr "⚙️ 系统负载"
 
 msgid "🌡️ Temperatures"
 msgstr "🌡️ 系统温度"
 
-msgid "🌐 Realtime Speed"
+msgid "⏱️ System Uptime"
+msgstr "⏱️ 系统运行时间"
+
+msgid "🌐 Realtime Speed (DL/UL)"
 msgstr "🌐 实时网速拆分"
 
-msgid "🌐 NIC Status"
-msgstr "🌐 网口连通状态"
+msgid "⬇️ Download Speed"
+msgstr "⬇️ 实时下载速度"
+
+msgid "⬆️ Upload Speed"
+msgstr "⬆️ 实时上传速度"
+
+msgid "📥 Total Downloaded"
+msgstr "📥 累计下载流量"
+
+msgid "📤 Total Uploaded"
+msgstr "📤 累计上传流量"
+
+msgid "📊 Total Traffic (DL+UL)"
+msgstr "📊 累计总流量"
+
+msgid "🔌 NIC Status"
+msgstr "🔌 物理网口状态"
 
 msgid "📝 Custom Text"
 msgstr "📝 自定义文本"
@@ -295,3 +325,53 @@ msgstr "未运行"
 
 msgid "Unknown Error"
 msgstr "未知错误"
+
+# ==================================
+# 🌟 二级参数菜单与新增模块翻译
+# ==================================
+
+# 新合并的主菜单选项
+msgid "🕒 Time & Date"
+msgstr "🕒 时间与日期"
+
+msgid "🌡️ Single Temp"
+msgstr "🌡️ 指定单体温度"
+
+# 二级菜单的下拉框标签名
+msgid "Display Format"
+msgstr "显示格式"
+
+msgid "Target Sensor"
+msgstr "目标传感器"
+
+msgid "Target Interface"
+msgstr "目标网口"
+
+# 单体温度传感器的专属翻译
+msgid "NSS-Top"
+msgstr "NSS-Top"
+
+msgid "NSS"
+msgstr "NSS"
+
+msgid "Wi-Fi PHY0"
+msgstr "无线 PHY0 (2.4G/5G)"
+
+msgid "Wi-Fi PHY1"
+msgstr "无线 PHY1 (5G-Game)"
+
+msgid "LPASS"
+msgstr "音频子系统 (LPASS)"
+
+msgid "DDR"
+msgstr "DDR 内存"
+
+
+# ==================================
+# 极客按键引脚配置
+# ==================================
+msgid "Physical Button GPIO"
+msgstr "物理按键 GPIO 引脚"
+
+msgid "GPIO pin number for the physical screen button. Default is 71 for JDCloud AX6600. Run 'find_button' in SSH to detect if unsure."
+msgstr "屏幕切换物理按键的 GPIO 引脚号。雅典娜默认通常为 71。如不确定，可在 SSH 终端执行 find_button 命令进行雷达探测。"

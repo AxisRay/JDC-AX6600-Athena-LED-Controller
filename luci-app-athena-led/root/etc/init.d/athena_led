@@ -22,22 +22,60 @@ chan_8=""
 
 parse_single() {
     local cfg="$1"
-    local module duration
+    local module duration param_time param_temp param_net param
     config_get module "$cfg" 'module' ''
     config_get duration "$cfg" 'duration' '5'
+    
+    # 获取二级菜单参数
+    config_get param_time "$cfg" 'param_time' ''
+    config_get param_temp "$cfg" 'param_temp' ''
+    config_get param_net "$cfg" 'param_net' ''
+
     [ -z "$module" ] && return
-    local str="${module}#${duration}"
+
+    # 🌟 智能匹配与防脏数据过滤
+    param=""
+    case "$module" in
+        time_group) param="$param_time" ;;
+        temp_single) param="$param_temp" ;;
+        netspeed_down|netspeed_up|traffic_down|traffic_up|traffic_total|traffic_split) param="$param_net" ;;
+    esac
+
+    # 拼接最终指令 (格式: 模块:参数#时长)
+    local str="${module}"
+    [ -n "$param" ] && str="${str}:${param}"
+    str="${str}#${duration}"
+
     single_str="${single_str}${single_str:+ }${str}"
 }
 
 parse_multi() {
     local cfg="$1"
-    local channel module duration
+    local channel module duration param_time param_temp param_net param
     config_get channel "$cfg" 'channel' '1'
     config_get module "$cfg" 'module' ''
     config_get duration "$cfg" 'duration' '5'
+    
+    # 获取二级菜单参数
+    config_get param_time "$cfg" 'param_time' ''
+    config_get param_temp "$cfg" 'param_temp' ''
+    config_get param_net "$cfg" 'param_net' ''
+
     [ -z "$module" ] && return
-    local str="${module}#${duration}"
+
+    # 🌟 智能匹配与防脏数据过滤
+    param=""
+    case "$module" in
+        time_group) param="$param_time" ;;
+        temp_single) param="$param_temp" ;;
+        netspeed_down|netspeed_up|traffic_down|traffic_up|traffic_total|traffic_split) param="$param_net" ;;
+    esac
+
+    # 拼接最终指令 (格式: 模块:参数#时长)
+    local str="${module}"
+    [ -n "$param" ] && str="${str}:${param}"
+    str="${str}#${duration}"
+
     eval "chan_${channel}=\"\${chan_${channel}}\${chan_${channel}:+ }\${str}\""
 }
 
@@ -64,9 +102,11 @@ start_service() {
     local weatherCity weatherSource weatherFormat seniverseKey tempFlag stockUrl
     local enableSleep sleepStart sleepEnd
     local disableLedClock disableLedMedal disableLedUp disableLedDown
+    local buttonGpio
 
     config_get lightLevel "$cfg" 'light_level' '5'
     config_get netInterface "$cfg" 'net_interface' 'br-lan'
+    config_get buttonGpio "$cfg" 'button_gpio' '71'
     config_get ipUrl "$cfg" 'wan_ip_custom_url' 'http://checkip.amazonaws.com'
     config_get customText "$cfg" 'custom_content' 'Roc-Gateway'
     config_get url "$cfg" 'http_url' ''
@@ -122,12 +162,13 @@ start_service() {
 
     # 防呆兜底：如果表格里什么都没填，给一个默认显示
     if [ "$has_profile" -eq 0 ]; then
-        procd_append_param command "time_sec#10 weather#10" "cpu#5 mem#5 temp#5"
+        procd_append_param command "time_group:time_sec#10 weather#10" "cpu#5 mem#5 temp_single:4#5"
     fi
 
     # 追加普通参数
     [ -n "$lightLevel" ] && procd_append_param command --light-level "$lightLevel"
     [ -n "$netInterface" ] && procd_append_param command --net-interface "$netInterface"
+    [ -n "$buttonGpio" ] && procd_append_param command --button-gpio "$buttonGpio"
     [ -n "$ipUrl" ] && procd_append_param command --ip-url "$ipUrl"
     [ -n "$customText" ] && procd_append_param command --custom-text "$customText"
     [ -n "$url" ] && procd_append_param command --custom-http-url "$url"
