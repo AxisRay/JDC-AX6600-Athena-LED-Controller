@@ -147,20 +147,24 @@ jobs:
       - name: Compile Package
         working-directory: ./sdk
         run: |
-          LUCI_SRC=$(find $GITHUB_WORKSPACE -type d -name "luci-app-athena-led" | head -n 1)
+          # 1. 查找真正的插件目录（排除 sdk 目录本身）
+          LUCI_SRC=$(find $GITHUB_WORKSPACE -maxdepth 2 -type d -name "luci-app-athena-led" | grep -v "sdk" | head -n 1)
           
           if [ -z "$LUCI_SRC" ]; then
              echo "❌ Error: Could not find 'luci-app-athena-led' directory!"
-             find $GITHUB_WORKSPACE -maxdepth 2
              exit 1
           fi
           
-          ln -s "$LUCI_SRC" package/luci-app-athena-led
+          # 2. 🚨 核心修复：使用物理复制代替软链接
+          mkdir -p package/luci-app-athena-led
+          cp -r "$LUCI_SRC"/* package/luci-app-athena-led/
           
+          # 3. 🚨 核心修复：强制转为 Linux 换行符 (专治 Windows 换行符崩溃)
+          sudo apt-get install -y dos2unix
+          find package/luci-app-athena-led -type f -exec dos2unix {} +
+          
+          # 4. 🚨 核心修复：移除会导致找不到密钥而崩溃的 CONFIG_SIGNED_PACKAGES
           echo "CONFIG_PACKAGE_luci-app-athena-led=m" > .config
-          if [ "${{ matrix.use_apk }}" = "true" ]; then
-             echo "CONFIG_SIGNED_PACKAGES=y" >> .config
-          fi
           
           make defconfig
           make package/luci-app-athena-led/download V=s
