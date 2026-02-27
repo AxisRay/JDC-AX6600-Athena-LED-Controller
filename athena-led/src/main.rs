@@ -38,6 +38,15 @@ pub mod led_screen {
             println!("📺 [屏幕输出 | 状态灯:{}] => {}", flag, text);
             Ok(())
         }
+        pub async fn play_animation(&mut self, file_name: &str, duration_secs: u64, status: u8) -> Result<()> {
+            println!("🎬 [虚拟屏幕 | 状态灯:{}] 开始模拟播放动画: {} (时长: {}秒)", status, file_name, duration_secs);
+            
+            // 模拟动画播放时的耗时，让本地测试时的控制台也能像真机一样停顿
+            tokio::time::sleep(std::time::Duration::from_secs(duration_secs)).await;
+            
+            println!("✅ [虚拟屏幕] 动画 {} 播放结束", file_name);
+            Ok(())
+        }
     }
 }
 
@@ -1513,7 +1522,7 @@ tokio::task::spawn_blocking(move || {
 // ==========================================
 // 🪟 Windows 环境下的“空壳”监听器 (防报错)
 // ==========================================
-#[cfg(windows)]
+#[cfg(not(unix))]
 // 🌟 增加第二个参数声明，哪怕不用它，也要让签名保持一致
 fn spawn_button_listener(
     _tx: tokio::sync::watch::Sender<i32>, 
@@ -1523,6 +1532,8 @@ fn spawn_button_listener(
     // Windows 模拟器不需要物理按键监听，所以这里保持空或者加行打印
     println!("📺 [Windows 模拟器] 按键监听已就绪（空跑模式）");
 }
+
+
 
 // 🌟 完美去掉了 pub，解决了可见性报错！
 async fn process_loop(
@@ -1779,7 +1790,7 @@ async fn process_loop(
                             let display_text = format!("{}{}", dynamic_icon, temp_part_str);
                             
                             // [修改点] 强制静态锁死，彻底解决图标闪烁导致的左右横跳
-                            let _ = screen.write_data(display_text.as_bytes(), status_leds).await;
+                            let _ = screen.write_data(display_text.as_bytes(), get_leds(monitor, args)).await;
                             
                             if last_frame.elapsed().as_millis() >= 500 {
                                 frame_flag = !frame_flag;
@@ -1803,7 +1814,7 @@ async fn process_loop(
                                 // 🌟 核心逻辑：滚动动作 + 1秒停顿 作为一个整体异步执行
                                 _ = async {
                                     // 1. 调用原生 write_data 执行完整的从右到左滚动
-                                    let _ = screen.write_data(display_text.as_bytes(), status_leds).await;
+                                    let _ = screen.write_data(display_text.as_bytes(), get_leds(monitor, args)).await;
                                     // 2. 滚出屏幕后，静止等待 1 秒
                                     tokio::time::sleep(Duration::from_secs(1)).await;
                                 } => {
@@ -1821,6 +1832,29 @@ async fn process_loop(
                 "stock" => {
                     let (txt, _) = monitor.get_stock_trend(&args.stock_url).await; // [修改点] 忽略原来的 flag
                     text_to_show = txt;
+                }
+                // ==========================================
+                // 🎬 动画模块专属分支
+                // ==========================================
+                "anim" => {
+                    // 1. 获取文件名 (新架构下对应 param 字段)
+                    let file_name = module.param.clone(); 
+        
+                    if file_name.is_empty() {
+                        eprintln!("⚠️ 警告: 动画模块未指定文件");
+                        text_to_show = "NO FILE".to_string();
+                    } else {
+                        // 2. 直接获取该模块的持续时间 (u64)
+                        let duration_secs = module.duration;
+                        let status_leds = get_leds(monitor, args);
+            
+                        // 3. 将控制权完全交给我们的“无情推流机器”！
+                        let _ = screen.play_animation(&file_name, duration_secs, status_leds).await;
+            
+                        // 🌟 魔法发生地：
+                        // 动画播完后，因为我们没有给 text_to_show 赋值（依然是空），
+                        // 所以会自动跳过底部的 if !text_to_show.is_empty() 渲染块，无缝衔接下一个模块！
+                    }
                 }
                 _ => {
                     module_idx += 1;

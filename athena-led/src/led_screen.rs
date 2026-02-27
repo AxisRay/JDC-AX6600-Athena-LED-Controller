@@ -1,6 +1,8 @@
 use anyhow::Result;
 use sysfs_gpio::{Direction, Pin};
 use crate::char_dict::CHAR_DICT;
+use std::fs;
+use std::time::{Instant, Duration};
 
 const LOW: u8 = 0x00;
 const HIGH: u8 = 0x01;
@@ -84,6 +86,60 @@ impl LedScreen {
         }
         Ok(())
     }
+
+    // ==========================================
+    // 🎬 动画播放引擎 (0 CPU 消耗，直接内存推流)
+    // ==========================================
+    pub async fn play_animation(&mut self, file_name: &str, duration_secs: u64, status: u8) -> Result<()> {
+        let file_path = format!("/etc/athena_led/anim/{}", file_name);
+        
+        if let Ok(metadata) = fs::metadata(&file_path) {
+        if metadata.len() > 50 * 1024 * 1024 { // 50 MB 限制
+            eprintln!("❌ 动画文件过大 (超过 5MB)，拒绝加载: {}", file_path);
+            return self.static_display(b"TOO LARGE", status);
+        }
+    }
+        // 1. 一次性把整个动画文件读进内存
+        let anim_data = match fs::read(&file_path) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("❌ 无法读取动画文件 {}: {}", file_path, e);
+                // 读不到文件时防呆：显示一个错误提示并退出
+                return self.static_display(b"FILE ERR", status);
+            }
+        };
+
+        let frames_count = anim_data.len() / 27;
+        if frames_count == 0 {
+            eprintln!("❌ 动画文件为空或已损坏: {}", file_path);
+            return Ok(());
+        }
+
+        let start_time = Instant::now();
+        let total_duration = Duration::from_secs(duration_secs);
+        
+        // 2. 设定帧间隔 (15 FPS = 约 66 毫秒)
+        let frame_interval = Duration::from_millis(66); 
+
+        // 3. 切片读取：每次精准切出 27 个字节！
+        // .cycle() 魔法：播到底部自动从头循环，直到总时长结束！
+        let mut frame_iter = anim_data.chunks_exact(27).cycle();
+
+        // 4. 开始无情推流
+        while start_time.elapsed() < total_duration {
+            if let Some(frame_chunk) = frame_iter.next() {
+                // 震惊！由于 .bin 已经做好了列映射，我们直接把这 27 字节塞给底层！
+                self.do_write_data(frame_chunk, status)?;
+            }
+            
+            // 异步休眠，挂起当前任务，立刻将 CPU 交还给按键监听线程！
+            tokio::time::sleep(frame_interval).await;
+        }
+
+        Ok(())
+    }
+
+
 
     // 🌟 专为动态模块（天气、时间）设计的“强制静态、完美居中、零浪费”特化方法
 

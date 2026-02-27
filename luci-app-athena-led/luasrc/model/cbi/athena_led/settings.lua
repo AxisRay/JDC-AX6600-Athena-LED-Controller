@@ -75,11 +75,14 @@ local function add_module_options(opt)
     opt:value("banner", translate("📝 Custom Text"))
     opt:value("http_custom", translate("🔗 HTTP API"))
     opt:value("stock", translate("📈 Stock Trend"))
+
+    -- 🌟 [新增] 5. 动画播放
+    opt:value("anim", translate("🎬 Animation (.bin)"))
 end
 
 
 -- ==========================================
--- 🌟 2. 二级参数菜单：多合一动态参数列 (瘦身过滤版)
+-- 🌟 2. 二级参数菜单：多合一动态参数列 (加入动画扫描)
 -- ==========================================
 local function add_module_params(section)
     -- 使用 Value，配合 :value() 注入，LuCI 会自动渲染成可手写+可下拉的组合框
@@ -117,8 +120,28 @@ local function add_module_params(section)
            not dev:match("^erspan") and 
            not dev:match("^miireg") and 
            not dev:match("^phy") then
-            o_param:value(dev, translate("🌐 [Net] ") .. dev) 
+             o_param:value(dev, translate("🌐 [Net] ") .. dev) 
         end
+    end
+
+    -- ==========================================
+    -- 🎬 【动画类参数】 (动态扫描本地 bin 文件)
+    -- ==========================================
+    local anim_dir = "/etc/athena_led/anim/"
+    -- 确保目录存在，防止第一次启动时报错
+    sys.call("mkdir -p " .. anim_dir)
+    
+    -- 使用 ls 命令扫描目录下的所有 .bin 文件
+    local handle = io.popen('ls ' .. anim_dir .. '*.bin 2>/dev/null')
+    if handle then
+        for file_path in handle:lines() do
+            -- 提取出纯文件名 (例如 bad_apple.bin)
+            local file_name = file_path:match("([^/]+%.bin)$")
+            if file_name then
+                o_param:value(file_name, translate("🎬 [Anim] ") .. file_name)
+            end
+        end
+        handle:close()
     end
 end
 
