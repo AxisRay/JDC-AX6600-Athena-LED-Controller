@@ -1369,8 +1369,8 @@ async fn main() -> Result<()> {
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let running_for_listener = std::sync::Arc::clone(&running);
     
-    // 初始化屏幕
-    let mut screen = led_screen::LedScreen::new(581, 582, 585, 586)
+    // 初始化屏幕（左 STB、右 STB、CLK、DIO：GPIO 501/502/505/506）
+    let mut screen = led_screen::LedScreen::new(501, 502, 505, 506)
         .context("Failed to init screen")?;
     screen.power(true, args.light_level)?;
     
